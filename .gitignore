@@ -23,5 +23,8 @@ dist-ssr
 *.sln
 *.sw?
 
-
+# Environment files
+.env
 .env.local
+.env.development.local
+.env.production.local

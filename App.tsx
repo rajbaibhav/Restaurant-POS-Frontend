@@ -1,6 +1,6 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Table, TableStatus, OrderItem, Transaction, StaffMember, MenuItem } from './types';
-import { MENU_ITEMS as DEFAULT_MENU } from './constants';
+import { fetchMenu, fetchTables, fetchTransactions, updateTableOrder as apiUpdateTableOrder, finalizeTransaction as apiFinalizeTransaction, fetchCurrentUser } from './services/backendApi';
 import Dashboard from './components/Dashboard';
 import OrderModule from './components/OrderModule';
 import BillingModule from './components/BillingModule';
@@ -9,28 +9,93 @@ import SalesHistory from './components/SalesHistory';
 import AdminDashboard from './components/AdminDashboard';
 import Sidebar from './components/Sidebar';
 import Auth from './components/Auth';
+import ChangePinModal from './components/ChangePinModal';
+
+
+// ── Backend response mappers ─────────────────────────────────────────────────
+const mapMenuItem = (m: Record<string, unknown>): MenuItem => ({
+  id: String(m._id),
+  name: String(m.name),
+  price: Number(m.price),
+  category: String(m.category),
+  image: String(m.image || 'https://via.placeholder.com/150'),
+  isVeg: Boolean(m.isVeg),
+  status: m.status
+    ? (String(m.status) as MenuItem['status'])
+    : (m.isAvailable ? 'current' : 'not_selling'),
+});
+
+const mapTable = (t: Record<string, unknown>): Table => ({
+  id: Number(t.tableId),
+  status: String(t.status).toLowerCase() as TableStatus,
+  currentOrder: (
+    (t.currentOrder as { menuItemId: { _id?: string } | string; quantity: number }[]) || []
+  ).map((o) => ({
+    menuItemId:
+      typeof o.menuItemId === 'object' && o.menuItemId !== null
+        ? String((o.menuItemId as { _id?: string })._id || o.menuItemId)
+        : String(o.menuItemId),
+    quantity: o.quantity,
+  })),
+});
+
+const mapTransaction = (tx: Record<string, unknown>): Transaction => ({
+  id: String(tx.receiptId || tx._id),
+  tableId: Number(tx.tableId),
+  items: (
+    (tx.items as { menuItemId: { _id?: string } | string; quantity: number }[]) || []
+  ).map((item) => ({
+    menuItemId:
+      typeof item.menuItemId === 'object' && item.menuItemId !== null
+        ? String((item.menuItemId as { _id?: string })._id || item.menuItemId)
+        : String(item.menuItemId),
+    quantity: item.quantity,
+  })),
+  subtotal: Number(tx.subtotal),
+  tax: 0,
+  serviceCharge: 0,
+  total: Number(tx.total),
+  timestamp: new Date(String(tx.createdAt)),
+  paymentMethod: tx.paymentMethod as Transaction['paymentMethod'],
+});
+// ─────────────────────────────────────────────────────────────────────────────
 
 const App: React.FC = () => {
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(!!localStorage.getItem('token'));
   const [isOwner, setIsOwner] = useState<boolean>(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
-  
-  // GLOBAL MENU STATE
-  const [menuItems, setMenuItems] = useState<MenuItem[]>(() => 
-    DEFAULT_MENU.map(item => ({ ...item, status: 'current' }))
-  );
+  const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
+  const [isLoading, setIsLoading] = useState<boolean>(false);
 
-  const [staffMembers, setStaffMembers] = useState<StaffMember[]>([
-    { id: '1', name: 'Default Staff', userId: 'staff01', password: 'staff123', isActive: true, dateAdded: new Date() }
-  ]);
-  
-  const [tables, setTables] = useState<Table[]>(
-    Array.from({ length: 6 }, (_, i) => ({ id: i + 1, status: TableStatus.AVAILABLE, currentOrder: [] }))
-  );
-  
+  // GLOBAL MENU STATE
+  const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
+  const [staffMembers, setStaffMembers] = useState<StaffMember[]>([]);
+  const [tables, setTables] = useState<Table[]>([]);
   const [selectedTableId, setSelectedTableId] = useState<number | null>(null);
   const [view, setView] = useState<'dashboard' | 'order' | 'billing' | 'checkout-map' | 'bill-registry' | 'admin-dashboard'>('dashboard');
   const [transactions, setTransactions] = useState<Transaction[]>([]);
+  const [isChangePinModalOpen, setIsChangePinModalOpen] = useState<boolean>(false);
+
+
+  // Restore role on page refresh: if a token already exists in localStorage,
+  // validate it against the backend and recover isOwner without requiring a new login
+  useEffect(() => {
+    const savedToken = localStorage.getItem('token');
+    if (!savedToken || isAuthenticated) return; // already logged-in via handleLogin, skip
+    fetchCurrentUser(savedToken)
+      .then(user => {
+        setIsOwner(user.role === 'admin');
+        setToken(savedToken);
+        setIsAuthenticated(true);
+        if (user.role === 'admin') setView('admin-dashboard');
+      })
+      .catch(() => {
+        // Token is expired or invalid — clear everything and force re-login
+        localStorage.removeItem('token');
+        setIsAuthenticated(false);
+        setToken(null);
+      });
+  }, []);
 
   const navigateTo = (v: any) => {
     if (v !== 'order' && v !== 'billing') setSelectedTableId(null);
@@ -40,14 +105,20 @@ const App: React.FC = () => {
 
   const selectedTable = useMemo(() => tables.find(t => t.id === selectedTableId) || null, [tables, selectedTableId]);
 
-  const handleLogin = (role: 'owner' | 'staff') => {
+  const handleLogin = async (role: 'owner' | 'staff', token: string) => {
     setIsOwner(role === 'owner');
     setIsAuthenticated(true);
-    if (role === 'owner') setView('admin-dashboard'); 
+    setToken(token);
+    if (role === 'owner') setView('admin-dashboard');
   };
 
   const handleLogout = () => {
-    setIsAuthenticated(false); setView('dashboard'); setSelectedTableId(null); setIsSidebarOpen(false);
+    setIsAuthenticated(false);
+    setToken(null);
+    localStorage.removeItem('token');
+    setView('dashboard');
+    setSelectedTableId(null);
+    setIsSidebarOpen(false);
   };
 
   const handleTableClick = (id: number, action?: 'order' | 'bill') => {
@@ -58,29 +129,61 @@ const App: React.FC = () => {
     else setView('order');
   };
 
-  const updateTableOrder = (tableId: number, newItems: OrderItem[]) => {
-    setTables(prev => prev.map(t => {
-      if (t.id !== tableId) return t;
-      const mergedOrder = [...t.currentOrder];
-      newItems.forEach(newItem => {
-        const existingIdx = mergedOrder.findIndex(o => o.menuItemId === newItem.menuItemId);
-        if (existingIdx > -1) {
-          mergedOrder[existingIdx].quantity += newItem.quantity;
-          if (newItem.notes) mergedOrder[existingIdx].notes = newItem.notes;
-        } else mergedOrder.push(newItem);
-      });
-      return { ...t, currentOrder: mergedOrder, status: mergedOrder.length > 0 ? TableStatus.OCCUPIED : TableStatus.AVAILABLE };
-    }));
-    setSelectedTableId(null);
-    setView('dashboard');
+  const updateTableOrder = async (tableId: number, newItems: OrderItem[]) => {
+    if (!token) return;
+    try {
+      await apiUpdateTableOrder(tableId, newItems, token);
+      // Refetch tables after update, mapping backend shape to frontend types
+      const rawTables = await fetchTables(token);
+      setTables((rawTables as Record<string, unknown>[]).map(mapTable));
+      setSelectedTableId(null);
+      setView('dashboard');
+    } catch (err) {
+      // Optionally handle error
+    }
   };
 
-  const finalizeTransaction = (transaction: Transaction) => {
-    setTransactions(prev => [...prev, transaction]);
-    setTables(prev => prev.map(t => t.id === transaction.tableId ? { ...t, status: TableStatus.AVAILABLE, currentOrder: [] } : t));
-    setSelectedTableId(null);
-    setView('bill-registry');
+  const finalizeTransaction = async (transaction: Transaction) => {
+    if (!token) return;
+    try {
+      // Backend only needs tableId + paymentMethod; it recalculates totals securely
+      await apiFinalizeTransaction(transaction.tableId, transaction.paymentMethod, token);
+      // Refetch tables and transactions after finalizing, mapping backend shapes
+      const [rawTables, rawTxs] = await Promise.all([
+        fetchTables(token),
+        fetchTransactions(token)
+      ]);
+      setTables((rawTables as Record<string, unknown>[]).map(mapTable));
+      setTransactions((rawTxs as Record<string, unknown>[]).map(mapTransaction));
+      setSelectedTableId(null);
+      setView('bill-registry');
+    } catch (err) {
+      // Optionally handle error
+    }
   };
+
+  // Fetch menu, tables, transactions after login
+  useEffect(() => {
+    const fetchData = async () => {
+      if (!token) return;
+      setIsLoading(true);
+      try {
+        const [rawMenu, rawTables, rawTxs] = await Promise.all([
+          fetchMenu(token),
+          fetchTables(token),
+          fetchTransactions(token)
+        ]);
+        setMenuItems((rawMenu as Record<string, unknown>[]).map(mapMenuItem));
+        setTables((rawTables as Record<string, unknown>[]).map(mapTable));
+        setTransactions((rawTxs as Record<string, unknown>[]).map(mapTransaction));
+      } catch (err) {
+        handleLogout();
+      } finally {
+        setIsLoading(false);
+      }
+    };
+    if (isAuthenticated && token) fetchData();
+  }, [isAuthenticated, token]);
 
   if (!isAuthenticated) return <Auth onLogin={handleLogin} staffMembers={staffMembers} />;
 
@@ -88,18 +191,19 @@ const App: React.FC = () => {
     // FIX 1: Changed h-screen to h-[100dvh] for proper mobile browser height.
     // Changed bg-slate-50 to bg-[#ffffff] for the Uber-style B2B theme.
     <div className="flex h-[100dvh] w-screen bg-[#ffffff] overflow-hidden relative font-sans">
-      <Sidebar 
-        currentView={view} 
-        isOwner={isOwner} 
-        isOpen={isSidebarOpen} 
-        onClose={() => setIsSidebarOpen(false)} 
-        onLogout={handleLogout} 
-        onNavigate={navigateTo} 
+      <Sidebar
+        currentView={view}
+        isOwner={isOwner}
+        isOpen={isSidebarOpen}
+        onClose={() => setIsSidebarOpen(false)}
+        onLogout={handleLogout}
+        onNavigate={navigateTo}
+        onChangePin={() => setIsChangePinModalOpen(true)}
       />
-      
+
       {/* FIX 2: Added min-w-0 and min-h-0 to prevent flexbox children from breaking layout boundaries */}
       <div className="flex-1 flex flex-col min-w-0 min-h-0 h-full overflow-hidden">
-        
+
         {/* Mobile Header */}
         <header className="lg:hidden bg-[#ffffff] border-b border-[#e2e2e2] px-5 py-4 flex items-center justify-between shrink-0 z-10">
           <button onClick={() => setIsSidebarOpen(true)} className="p-2 -ml-2 hover:bg-[#efefef] rounded-full text-[#000000] transition-colors">
@@ -107,13 +211,13 @@ const App: React.FC = () => {
           </button>
           <span className="font-bold text-[#000000] text-[18px] tracking-tight">Eat & Park</span>
           <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[12px] font-bold ${isOwner ? 'bg-[#000000] text-[#ffffff]' : 'bg-[#efefef] text-[#000000]'}`}>
-             {isOwner ? 'AD' : 'ST'}
+            {isOwner ? 'AD' : 'ST'}
           </div>
         </header>
 
         {/* Main Content Area Wrapper */}
         <main className="flex-1 flex flex-col p-4 sm:p-6 lg:p-8 min-h-0 overflow-hidden">
-          
+
           {/* Desktop Header */}
           <header className="hidden lg:flex mb-8 justify-between items-center shrink-0">
             <div>
@@ -122,31 +226,44 @@ const App: React.FC = () => {
             </div>
           </header>
 
-          {/* View Routing - min-h-0 ensures internal components can scroll properly */}
+          {/* View Routing - isLoading guard prevents race condition where tables render before menu items */}
           <div className="flex-1 min-h-0 relative">
-            {view === 'dashboard' && <div className="h-full overflow-y-auto pr-1"><Dashboard tables={tables} onTableClick={handleTableClick} menuItems={menuItems} /></div>}
-            
-            {view === 'checkout-map' && <div className="h-full overflow-y-auto pr-1"><CheckoutMap tables={tables} onSelectTable={(id) => { setSelectedTableId(id); setView('billing'); }} menuItems={menuItems} /></div>}
-            
-            {view === 'bill-registry' && <SalesHistory transactions={transactions} menuItems={menuItems} />}
-
-            {view === 'admin-dashboard' && isOwner && (
-              <div className="h-full overflow-y-auto pr-1">
-                <AdminDashboard 
-                  transactions={transactions} 
-                  tables={tables} 
-                  staffMembers={staffMembers} setStaffMembers={setStaffMembers}
-                  menuItems={menuItems} setMenuItems={setMenuItems} 
-                />
+            {isLoading ? (
+              <div className="h-full flex items-center justify-center">
+                <p className="text-[#475569] text-[16px] font-medium">Loading...</p>
               </div>
+            ) : (
+              <>
+                {view === 'dashboard' && <div className="h-full overflow-y-auto pr-1"><Dashboard tables={tables} onTableClick={handleTableClick} menuItems={menuItems} /></div>}
+
+                {view === 'checkout-map' && <div className="h-full overflow-y-auto pr-1"><CheckoutMap tables={tables} onSelectTable={(id) => { setSelectedTableId(id); setView('billing'); }} menuItems={menuItems} /></div>}
+
+                {view === 'bill-registry' && <SalesHistory transactions={transactions} menuItems={menuItems} />}
+
+                {view === 'admin-dashboard' && isOwner && (
+                  <div className="h-full overflow-y-auto pr-1">
+                    <AdminDashboard
+                      transactions={transactions}
+                      tables={tables}
+                      menuItems={menuItems} setMenuItems={setMenuItems}
+                    />
+                  </div>
+                )}
+
+                {view === 'order' && selectedTable && <OrderModule table={selectedTable} onConfirmOrder={(items) => updateTableOrder(selectedTable.id, items)} onGenerateBill={() => { setView('billing'); }} onBack={() => { setSelectedTableId(null); setView('dashboard'); }} menuItems={menuItems} />}
+
+                {view === 'billing' && selectedTable && <div className="h-full overflow-y-auto"><BillingModule table={selectedTable} onFinalize={finalizeTransaction} onBack={() => { setView('dashboard'); }} menuItems={menuItems} /></div>}
+              </>
             )}
-            
-            {view === 'order' && selectedTable && <OrderModule table={selectedTable} onConfirmOrder={(items) => updateTableOrder(selectedTable.id, items)} onGenerateBill={() => { setView('billing'); }} onBack={() => { setSelectedTableId(null); setView('dashboard'); }} menuItems={menuItems} />}
-            
-            {view === 'billing' && selectedTable && <div className="h-full overflow-y-auto"><BillingModule table={selectedTable} onFinalize={finalizeTransaction} onBack={() => { setView('dashboard'); }} menuItems={menuItems} /></div>}
           </div>
         </main>
       </div>
+      {isChangePinModalOpen && (
+        <ChangePinModal
+          token={token || ''}
+          onClose={() => setIsChangePinModalOpen(false)}
+        />
+      )}
     </div>
   );
 };

@@ -7,9 +7,10 @@ interface SidebarProps {
   onClose: () => void;
   onLogout: () => void;
   onNavigate: (view: 'dashboard' | 'order' | 'billing' | 'checkout-map' | 'bill-registry' | 'admin-dashboard') => void;
+  onChangePin: () => void;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ currentView, isOwner, isOpen, onClose, onLogout, onNavigate }) => {
+const Sidebar: React.FC<SidebarProps> = ({ currentView, isOwner, isOpen, onClose, onLogout, onNavigate, onChangePin }) => {
   return (
     <>
       <div 
@@ -64,6 +65,12 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, isOwner, isOpen, onClose
               <p className="text-[14px] text-[#94a3b8]">Active Session</p>
             </div>
           </div>
+          <button onClick={onChangePin} className="w-full flex items-center justify-center gap-2 py-2 mb-3 bg-[#1e293b] text-[#ffffff] hover:bg-[#334155] border border-[#334155] rounded-full font-semibold text-[14px] transition-colors">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z" />
+            </svg>
+            Change PIN
+          </button>
           <button onClick={onLogout} className="w-full flex items-center justify-center py-3 bg-[#ffffff] text-[#0f172a] hover:bg-[#e2e8f0] rounded-full font-bold text-[16px] transition-colors">
             Sign Out
           </button>

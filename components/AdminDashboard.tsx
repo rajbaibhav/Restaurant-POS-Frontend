@@ -1,11 +1,25 @@
-import React, { useState, useMemo } from 'react';
-import { Transaction, Table, TableStatus, StaffMember, MenuItem } from '../types';
+import React, { useState, useMemo, useEffect } from 'react';
+import { Transaction, Table, TableStatus, MenuItem } from '../types';
+import SoldItemsLogs from './SoldItemsLogs';
+import {
+  fetchAllUsers,
+  updateUser as apiUpdateUser,
+  deleteUser as apiDeleteUser,
+  updateMenuItemStatus,
+  addMenuItemApi,
+} from '../services/backendApi';
+
+interface BackendUser {
+  _id: string;
+  name: string;
+  userId?: string;
+  role: string;
+  status: 'approved' | 'pending';
+}
 
 interface AdminDashboardProps {
   transactions: Transaction[];
   tables: Table[];
-  staffMembers: StaffMember[];
-  setStaffMembers: React.Dispatch<React.SetStateAction<StaffMember[]>>;
   menuItems: MenuItem[];
   setMenuItems: React.Dispatch<React.SetStateAction<MenuItem[]>>;
 }
@@ -13,11 +27,25 @@ interface AdminDashboardProps {
 type MenuStatus = 'current' | 'pending' | 'not_selling';
 
 const AdminDashboard: React.FC<AdminDashboardProps> = ({ 
-  transactions, tables, staffMembers, setStaffMembers, menuItems, setMenuItems 
+  transactions, tables, menuItems, setMenuItems 
 }) => {
   const [isStaffModalOpen, setIsStaffModalOpen] = useState(false);
   const [isTableModalOpen, setIsTableModalOpen] = useState(false);
   const [isMenuModalOpen, setIsMenuModalOpen] = useState(false);
+  const [isLogsOpen, setIsLogsOpen] = useState(false);
+
+  // Staff state — fetched from backend
+  const [staffMembers, setStaffMembers] = useState<BackendUser[]>([]);
+  const [isStaffLoading, setIsStaffLoading] = useState(false);
+  const [staffError, setStaffError] = useState<string | null>(null);
+
+  // Admin resetting a staff member's PIN state
+  const [resetPinUser, setResetPinUser] = useState<BackendUser | null>(null);
+  const [adminNewPin, setAdminNewPin] = useState('');
+  const [adminConfirmPin, setAdminConfirmPin] = useState('');
+  const [adminResetError, setAdminResetError] = useState<string | null>(null);
+  const [adminResetSuccess, setAdminResetSuccess] = useState(false);
+  const [isAdminResetSubmitting, setIsAdminResetSubmitting] = useState(false);
   
   const getLocalYMD = (d: Date) => {
     const date = new Date(d);
@@ -26,9 +54,6 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
   const [filterDate, setFilterDate] = useState(getLocalYMD(new Date()));
   
-  const [newName, setNewName] = useState('');
-  const [newUserId, setNewUserId] = useState('');
-  const [newPassword, setNewPassword] = useState('');
 
   const [activeMenuTab, setActiveMenuTab] = useState<MenuStatus>('current');
   const [menuSearchQuery, setMenuSearchQuery] = useState('');
@@ -45,24 +70,126 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
   let totalItemsSoldToday = todayTransactions.reduce((acc, t) => acc + t.items.reduce((sum, item) => sum + item.quantity, 0), 0);
   tables.forEach(t => { totalItemsSoldToday += t.currentOrder.reduce((acc, item) => acc + item.quantity, 0); });
 
+  // Fetch staff when the modal opens
+  useEffect(() => {
+    if (!isStaffModalOpen) return;
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    setIsStaffLoading(true);
+    setStaffError(null);
+    fetchAllUsers(token)
+      .then((users: BackendUser[]) => setStaffMembers(users))
+      .catch(() => setStaffError('Failed to load staff. Please try again.'))
+      .finally(() => setIsStaffLoading(false));
+  }, [isStaffModalOpen]);
+
   const handleAddStaff = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!newName || !newUserId || !newPassword) return;
-    if (staffMembers.some(s => s.userId === newUserId)) return alert("User ID already exists!");
-    setStaffMembers([...staffMembers, { id: Math.random().toString(36).substring(7), name: newName, userId: newUserId, password: newPassword, isActive: true, dateAdded: new Date() }]);
-    setNewName(''); setNewUserId(''); setNewPassword('');
+    // Staff creation is handled via /auth/register — not directly from admin panel.
+    alert('To add staff, ask them to register via the login screen. Then approve them here.');
   };
 
-  const toggleStaffAccess = (id: string) => setStaffMembers(staffMembers.map(staff => staff.id === id ? { ...staff, isActive: !staff.isActive } : staff));
-  const deleteStaffMember = (id: string, name: string) => { if (window.confirm(`Delete account for ${name}?`)) setStaffMembers(staffMembers.filter(staff => staff.id !== id)); };
-  const handleMoveMenu = (id: string, newStatus: MenuStatus) => setMenuItems(prev => prev.map(item => item.id === id ? { ...item, status: newStatus } : item));
+  const toggleStaffAccess = async (id: string, currentStatus: 'approved' | 'pending') => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    const newStatus = currentStatus === 'approved' ? 'pending' : 'approved';
+    try {
+      await apiUpdateUser(id, { status: newStatus }, token);
+      setStaffMembers(prev =>
+        prev.map(s => s._id === id ? { ...s, status: newStatus } : s)
+      );
+    } catch {
+      alert('Failed to update staff access.');
+    }
+  };
 
-  const handleAddNewMenuItem = (e: React.FormEvent) => {
-      e.preventDefault();
-      if (!newItemName || !newItemPrice || !newItemCategory) return;
-      setMenuItems([{ id: `menu_${Math.random().toString(36).substr(2, 9)}`, name: newItemName, price: Number(newItemPrice), category: newItemCategory, isVeg: newItemIsVeg, image: 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&w=200&q=80', status: 'pending' }, ...menuItems]);
+  const deleteStaffMember = async (id: string, name: string) => {
+    if (!window.confirm(`Delete account for ${name}?`)) return;
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    try {
+      await apiDeleteUser(id, token);
+      setStaffMembers(prev => prev.filter(s => s._id !== id));
+    } catch {
+      alert('Failed to delete staff member.');
+    }
+  };
+
+  const handleAdminResetPin = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resetPinUser) return;
+    setAdminResetError(null);
+
+    if (adminNewPin.length !== 4 || adminConfirmPin.length !== 4) {
+      setAdminResetError('PIN must be exactly 4 digits.');
+      return;
+    }
+
+    if (adminNewPin !== adminConfirmPin) {
+      setAdminResetError('The PINs do not match.');
+      return;
+    }
+
+    const token = localStorage.getItem('token');
+    if (!token) return;
+
+    setIsAdminResetSubmitting(true);
+    try {
+      await apiUpdateUser(resetPinUser._id, { newPin: adminNewPin, confirmNewPin: adminConfirmPin }, token);
+      setAdminResetSuccess(true);
+      setTimeout(() => {
+        setResetPinUser(null);
+        setAdminNewPin('');
+        setAdminConfirmPin('');
+        setAdminResetSuccess(false);
+      }, 1500);
+    } catch (err: any) {
+      setAdminResetError(err.message || 'Failed to reset PIN. Please try again.');
+    } finally {
+      setIsAdminResetSubmitting(false);
+    }
+  };
+
+  const handleMoveMenu = async (id: string, newStatus: MenuStatus) => {
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    try {
+      await updateMenuItemStatus(id, newStatus, token);
+      setMenuItems(prev => prev.map(item => item.id === id ? { ...item, status: newStatus } : item));
+    } catch {
+      alert('Failed to update menu item status.');
+    }
+  };
+
+  const handleAddNewMenuItem = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newItemName || !newItemPrice || !newItemCategory) return;
+    const token = localStorage.getItem('token');
+    if (!token) return;
+    const formData = new FormData();
+    formData.append('name', newItemName);
+    formData.append('price', newItemPrice);
+    formData.append('category', newItemCategory);
+    formData.append('isVeg', String(newItemIsVeg));
+    formData.append('status', 'pending');
+    formData.append('isAvailable', 'true');
+    try {
+      const created = await addMenuItemApi(formData, token);
+      const newItem: MenuItem = {
+        id: created._id,
+        name: created.name,
+        price: created.price,
+        category: created.category,
+        isVeg: created.isVeg,
+        image: created.image || 'https://images.unsplash.com/photo-1546069901-ba9599a7e63c?auto=format&fit=crop&w=200&q=80',
+        status: 'pending',
+      };
+      setMenuItems(prev => [newItem, ...prev]);
       setNewItemName(''); setNewItemPrice(''); setNewItemCategory(''); setNewItemIsVeg(true);
       alert('Added to Pending list!');
+    } catch {
+      alert('Failed to add menu item. Ensure you are connected to the backend.');
+    }
   };
 
   const pendingMenuItems = menuItems.filter(m => m.status === 'pending');
@@ -140,11 +267,22 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
             <button onClick={() => setIsStaffModalOpen(true)} className="h-14 sm:h-16 rounded-full bg-[#f1f5f9] hover:bg-[#e2e8f0] text-[#0f172a] font-medium transition-colors text-[16px]">
                 Staff Access
             </button>
-            <button className="h-14 sm:h-16 rounded-full bg-[#f1f5f9] hover:bg-[#e2e8f0] text-[#0f172a] font-medium transition-colors text-[16px]">
-                System Settings
+            <button
+              onClick={() => setIsLogsOpen(true)}
+              className="h-14 sm:h-16 rounded-full bg-[#f1f5f9] hover:bg-[#e2e8f0] text-[#0f172a] font-medium transition-colors text-[16px]"
+            >
+                Logs
             </button>
          </div>
       </div>
+
+      {isLogsOpen && (
+        <SoldItemsLogs
+          transactions={transactions}
+          menuItems={menuItems}
+          onClose={() => setIsLogsOpen(false)}
+        />
+      )}
 
       {isMenuModalOpen && (
         <div className="fixed inset-0 bg-[#0f172a] bg-opacity-50 z-50 flex items-center justify-center p-4">
@@ -234,7 +372,38 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                         <option value="nonveg">Non-Veg</option>
                                     </select>
                                 </div>
-                                <input type="text" list="categories" value={newItemCategory} onChange={e => setNewItemCategory(e.target.value)} required placeholder="Category" className="w-full h-12 border border-[#e2e8f0] rounded-lg px-4 text-[14px] outline-none focus:border-[#2563eb]"/>
+                                <select value={newItemCategory} onChange={e => setNewItemCategory(e.target.value)} required className="w-full h-12 border border-[#e2e8f0] rounded-lg px-4 text-[14px] outline-none focus:border-[#2563eb]">
+                                    <option value="">Select Category</option>
+                                    <option value="MOMOS">Momos</option>
+                                    <option value="NOODLES">Noodles</option>
+                                    <option value="PAW BHAJI">Paw Bhaji</option>
+                                    <option value="DOSA">Dosa</option>
+                                    <option value="UTTAPAM">Uttapam</option>
+                                    <option value="BEVERAGES">Beverages</option>
+                                    <option value="SHAKE">Shake</option>
+                                    <option value="BLOSSOM">Blossom</option>
+                                    <option value="LASSI">Lassi</option>
+                                    <option value="SOFT MOCKTAILS">Soft Mocktails</option>
+                                    <option value="BEVERAGES & SHAKES">Beverages &amp; Shakes</option>
+                                    <option value="DESERT">Desert</option>
+                                    <option value="SOUP">Soup</option>
+                                    <option value="CURDS & RAITA">Curds &amp; Raita</option>
+                                    <option value="SALAD">Salad</option>
+                                    <option value="PAPAD">Papad</option>
+                                    <option value="VEG STARTER">Veg Starter</option>
+                                    <option value="NON VEG STARTER">Non Veg Starter</option>
+                                    <option value="EAT N PARK SPECIAL">Eat N Park Special</option>
+                                    <option value="MAIN COURSE (VEG)">Main Course (Veg)</option>
+                                    <option value="DAL">Dal</option>
+                                    <option value="OIL FRIED CHICKEN">Oil Fried Chicken</option>
+                                    <option value="MAIN COURSE CHICKEN">Main Course Chicken</option>
+                                    <option value="MAIN COURSE MUTTON">Main Course Mutton</option>
+                                    <option value="ROTI">Roti</option>
+                                    <option value="RICE">Rice</option>
+                                    <option value="BIRYANI">Biryani</option>
+                                    <option value="SEA FOOD">Sea Food</option>
+                                    <option value="DESSERT">Dessert</option>
+                                </select>
                                 <button type="submit" className="w-full h-12 bg-[#253b80] hover:bg-[#0093d5] text-[#ffffff] rounded-full font-bold text-[14px] mt-2 transition-colors">Add to Pending</button>
                             </form>
                         </div>
@@ -299,36 +468,47 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                </button>
             </div>
 
-            <div className="flex-1 min-h-0 overflow-y-auto p-6 grid grid-cols-1 lg:grid-cols-2 gap-8 bg-[#f1f5f9]">
+             <div className="flex-1 min-h-0 overflow-y-auto p-6 grid grid-cols-1 lg:grid-cols-2 gap-8 bg-[#f1f5f9]">
                <div>
                  <h4 className="text-[14px] font-bold text-[#0f172a] mb-4">Active Directory</h4>
                  <div className="space-y-3">
-                    {staffMembers.map(staff => (
-                        <div key={staff.id} className="p-4 border border-[#e2e8f0] rounded-xl flex items-center justify-between bg-[#ffffff]">
+                    {isStaffLoading ? (
+                      <p className="text-[14px] font-medium text-[#475569] py-4 text-center">Loading...</p>
+                    ) : staffError ? (
+                      <p className="text-[14px] font-medium text-[#0f172a] py-4 text-center">{staffError}</p>
+                    ) : (
+                      staffMembers.map(staff => (
+                        <div key={staff._id} className="p-4 border border-[#e2e8f0] rounded-xl flex items-center justify-between bg-[#ffffff]">
                            <div>
                               <p className="font-bold text-[#0f172a] text-[16px]">{staff.name}</p>
-                              <p className="text-[12px] text-[#475569] mt-1">ID: {staff.userId}</p>
+                              <p className="text-[12px] text-[#475569] mt-1">Role: {staff.role}</p>
                            </div>
                            <div className="flex gap-2">
-                               <button onClick={() => toggleStaffAccess(staff.id)} className={`px-4 py-2 rounded-full text-[12px] font-medium ${staff.isActive ? 'bg-[#253b80] text-[#ffffff]' : 'bg-[#f1f5f9] text-[#475569]'}`}>
-                                  {staff.isActive ? 'Active' : 'Revoked'}
+                               <button onClick={() => toggleStaffAccess(staff._id, staff.status)} className={`px-4 py-2 rounded-full text-[12px] font-medium ${staff.status === 'approved' ? 'bg-[#253b80] text-[#ffffff]' : 'bg-[#f1f5f9] text-[#475569]'}`}>
+                                  {staff.status === 'approved' ? 'Active' : 'Revoked'}
                                </button>
-                               <button onClick={() => deleteStaffMember(staff.id, staff.name)} className="w-8 h-8 rounded-full bg-[#f1f5f9] text-[#0f172a] hover:bg-[#e2e8f0] flex items-center justify-center">
+                               <button 
+                                 onClick={() => setResetPinUser(staff)} 
+                                 title="Reset PIN"
+                                 className="w-8 h-8 rounded-full bg-[#f1f5f9] text-[#0f172a] hover:bg-[#e2e8f0] flex items-center justify-center"
+                               >
+                                 🔑
+                               </button>
+                               <button onClick={() => deleteStaffMember(staff._id, staff.name)} className="w-8 h-8 rounded-full bg-[#f1f5f9] text-[#0f172a] hover:bg-[#e2e8f0] flex items-center justify-center">
                                    X
                                </button>
                            </div>
                         </div>
-                    ))}
+                      ))
+                    )}
                  </div>
                </div>
                <div>
                  <div className="bg-[#ffffff] border border-[#e2e8f0] p-6 rounded-xl">
                     <h4 className="text-[14px] font-bold text-[#0f172a] mb-4">Create New Account</h4>
                     <form onSubmit={handleAddStaff} className="space-y-4">
-                       <input type="text" value={newName} onChange={e => setNewName(e.target.value)} required placeholder="Full Name" className="w-full h-12 border border-[#e2e8f0] rounded-lg px-4 text-[14px] outline-none focus:border-[#2563eb]"/>
-                       <input type="text" value={newUserId} onChange={e => setNewUserId(e.target.value)} required placeholder="User ID" className="w-full h-12 border border-[#e2e8f0] rounded-lg px-4 text-[14px] outline-none focus:border-[#2563eb]"/>
-                       <input type="password" value={newPassword} onChange={e => setNewPassword(e.target.value)} required placeholder="Password" className="w-full h-12 border border-[#e2e8f0] rounded-lg px-4 text-[14px] outline-none focus:border-[#2563eb]"/>
-                       <button type="submit" className="w-full h-12 bg-[#253b80] hover:bg-[#0093d5] transition-colors text-[#ffffff] rounded-full font-bold text-[14px]">Add Staff Member</button>
+                       <p className="text-[14px] text-[#475569] leading-relaxed">Staff members can self-register from the login screen. Once registered, their account will appear here as <strong>Revoked</strong> until you activate it.</p>
+                       <button type="submit" className="w-full h-12 bg-[#253b80] hover:bg-[#0093d5] transition-colors text-[#ffffff] rounded-full font-bold text-[14px]">Got it</button>
                     </form>
                  </div>
                </div>
@@ -389,6 +569,135 @@ const AdminDashboard: React.FC<AdminDashboardProps> = ({
                       </div>
                   ))}
                </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* --- ADMIN STAFF RESET PIN MODAL --- */}
+      {resetPinUser && (
+        <div className="fixed inset-0 bg-[#0f172a] bg-opacity-65 z-[110] flex items-center justify-center p-4 backdrop-blur-sm animate-fade-in">
+          <div className="bg-[#ffffff] rounded-2xl w-full max-w-md overflow-hidden shadow-2xl border border-[#e2e8f0] transform scale-100 transition-all duration-300">
+            
+            {/* Modal Header */}
+            <div className="relative p-6 border-b border-[#e2e8f0] bg-[#ffffff] flex items-center justify-between">
+              <div>
+                <h3 className="text-[20px] font-bold text-[#0f172a] tracking-tight">Reset Staff PIN</h3>
+                <p className="text-[13px] text-[#475569] mt-0.5">Reset security PIN for {resetPinUser.name}</p>
+              </div>
+              <button 
+                type="button" 
+                onClick={() => {
+                  setResetPinUser(null);
+                  setAdminNewPin('');
+                  setAdminConfirmPin('');
+                  setAdminResetError(null);
+                }} 
+                disabled={adminResetSuccess || isAdminResetSubmitting}
+                className="w-8 h-8 bg-[#f1f5f9] rounded-full flex items-center justify-center text-[#475569] hover:bg-[#e2e8f0] hover:text-[#0f172a] transition-colors disabled:opacity-50"
+              >
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="p-6">
+              {adminResetSuccess ? (
+                <div className="flex flex-col items-center justify-center py-6 text-center space-y-4">
+                  <div className="w-14 h-14 bg-green-50 border border-green-200 rounded-full flex items-center justify-center text-green-600 animate-bounce">
+                    <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" d="M5 13l4 4L19 7" />
+                    </svg>
+                  </div>
+                  <div>
+                    <h4 className="text-[18px] font-bold text-[#0f172a]">PIN Reset Successful!</h4>
+                    <p className="text-[14px] text-[#475569] mt-1">{resetPinUser.name}'s PIN has been updated.</p>
+                  </div>
+                </div>
+              ) : (
+                <form onSubmit={handleAdminResetPin} className="space-y-5">
+                  {adminResetError && (
+                    <div className="p-4 bg-red-50 border border-red-200 rounded-xl text-red-700 text-[14px] font-medium flex items-start gap-2.5">
+                      <svg className="w-5 h-5 shrink-0 text-red-500 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                      <span>{adminResetError}</span>
+                    </div>
+                  )}
+
+                  <div className="space-y-2">
+                    <label className="text-[13px] font-bold text-[#0f172a] uppercase tracking-wider block">New 4-Digit PIN</label>
+                    <input
+                      type="password"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      value={adminNewPin}
+                      onChange={(e) => {
+                        const cleaned = e.target.value.replace(/\D/g, '');
+                        if (cleaned.length <= 4) setAdminNewPin(cleaned);
+                      }}
+                      placeholder="••••"
+                      maxLength={4}
+                      required
+                      autoFocus
+                      className="w-full h-12 border border-[#e2e8f0] focus:border-[#253b80] focus:ring-1 focus:ring-[#253b80] rounded-xl px-4 text-[18px] font-mono tracking-widest text-center outline-none transition-colors"
+                    />
+                  </div>
+
+                  <div className="space-y-2">
+                    <label className="text-[13px] font-bold text-[#0f172a] uppercase tracking-wider block">Confirm New PIN</label>
+                    <input
+                      type="password"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      value={adminConfirmPin}
+                      onChange={(e) => {
+                        const cleaned = e.target.value.replace(/\D/g, '');
+                        if (cleaned.length <= 4) setAdminConfirmPin(cleaned);
+                      }}
+                      placeholder="••••"
+                      maxLength={4}
+                      required
+                      className="w-full h-12 border border-[#e2e8f0] focus:border-[#253b80] focus:ring-1 focus:ring-[#253b80] rounded-xl px-4 text-[18px] font-mono tracking-widest text-center outline-none transition-colors"
+                    />
+                  </div>
+
+                  <div className="pt-2 flex gap-3">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setResetPinUser(null);
+                        setAdminNewPin('');
+                        setAdminConfirmPin('');
+                        setAdminResetError(null);
+                      }}
+                      disabled={isAdminResetSubmitting}
+                      className="flex-1 h-12 border border-[#e2e8f0] hover:bg-[#f8fafc] text-[#475569] hover:text-[#0f172a] rounded-full font-bold text-[14px] transition-colors disabled:opacity-50"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={isAdminResetSubmitting || adminNewPin.length !== 4 || adminConfirmPin.length !== 4}
+                      className="flex-1 h-12 bg-[#253b80] hover:bg-[#1e293b] text-[#ffffff] rounded-full font-bold text-[14px] transition-all disabled:opacity-40 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+                    >
+                      {isAdminResetSubmitting ? (
+                        <>
+                          <svg className="animate-spin h-5 w-5 text-white" fill="none" viewBox="0 0 24 24">
+                            <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                            <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z" />
+                          </svg>
+                          Resetting...
+                        </>
+                      ) : (
+                        'Reset PIN'
+                      )}
+                    </button>
+                  </div>
+                </form>
+              )}
             </div>
           </div>
         </div>

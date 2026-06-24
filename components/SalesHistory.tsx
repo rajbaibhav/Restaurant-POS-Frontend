@@ -1,20 +1,81 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Transaction, MenuItem } from '../types';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
+import { fetchBillRegistry } from '../services/api';
 
 interface SalesHistoryProps {
   transactions: Transaction[];
   menuItems: MenuItem[];
 }
 
+const getLocalYMD = (d: Date) => {
+  const date = new Date(d);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+};
+
+const formatDisplayDate = (ymd: string) => {
+  const [y, m, d] = ymd.split('-').map(Number);
+  return new Date(y, m - 1, d).toLocaleDateString('en-IN', {
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  });
+};
+
+const mapApiTransaction = (raw: Record<string, unknown>): Transaction => {
+  const items = (raw.items as Array<{ menuItemId?: { _id?: string }; quantity: number }>) || [];
+  return {
+    id: String(raw.receiptId || raw._id),
+    tableId: Number(raw.tableId),
+    items: items.map((item) => ({
+      menuItemId: String(item.menuItemId?._id || item.menuItemId),
+      quantity: item.quantity,
+    })),
+    subtotal: Number(raw.subtotal),
+    tax: 0,
+    serviceCharge: 0,
+    total: Number(raw.total),
+    timestamp: new Date(String(raw.createdAt)),
+    paymentMethod: raw.paymentMethod as Transaction['paymentMethod'],
+  };
+};
+
 const SalesHistory: React.FC<SalesHistoryProps> = ({ transactions, menuItems }) => {
   const [isExporting, setIsExporting] = useState(false);
+  const [registryDate, setRegistryDate] = useState(getLocalYMD(new Date()));
+  const [todayTransactions, setTodayTransactions] = useState<Transaction[]>([]);
 
-  const totalRevenue = transactions.reduce((acc, t) => acc + t.total, 0);
-  const totalPaymentsDone = transactions.length;
-  const totalItemsServed = transactions.reduce((acc, t) => 
-    acc + t.items.reduce((sum, item) => sum + item.quantity, 0), 0
+  const todayYMD = getLocalYMD(new Date());
+
+  useEffect(() => {
+    const localToday = transactions.filter((tx) => getLocalYMD(tx.timestamp) === todayYMD);
+    const token = localStorage.getItem('token');
+
+    if (!token) {
+      setTodayTransactions(localToday);
+      setRegistryDate(todayYMD);
+      return;
+    }
+
+    fetchBillRegistry(token)
+      .then((data) => {
+        setRegistryDate(data.date);
+        setTodayTransactions(
+          (data.transactions as Record<string, unknown>[]).map(mapApiTransaction)
+        );
+      })
+      .catch(() => {
+        setTodayTransactions(localToday);
+        setRegistryDate(todayYMD);
+      });
+  }, [transactions, todayYMD]);
+
+  const totalRevenue = todayTransactions.reduce((acc, t) => acc + t.total, 0);
+  const totalPaymentsDone = todayTransactions.length;
+  const totalItemsServed = todayTransactions.reduce(
+    (acc, t) => acc + t.items.reduce((sum, item) => sum + item.quantity, 0),
+    0
   );
 
   const handleExportPDF = () => {
@@ -50,7 +111,7 @@ const SalesHistory: React.FC<SalesHistoryProps> = ({ transactions, menuItems }) 
       doc.text(`${totalPaymentsDone}`, 80, 65);
       doc.text(`${totalItemsServed}`, 140, 65);
 
-      const tableData = [...transactions].reverse().map(tx => [
+      const tableData = [...todayTransactions].reverse().map(tx => [
         `#${tx.id}`,
         `Table ${tx.tableId}`,
         tx.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
@@ -95,14 +156,16 @@ const SalesHistory: React.FC<SalesHistoryProps> = ({ transactions, menuItems }) 
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-end gap-4 shrink-0">
         <div>
           <h2 className="text-[32px] font-bold text-[#0f172a] tracking-tight leading-none">Bill Registry</h2>
-          <p className="text-[14px] text-[#475569] mt-2">Daily summary of finalized settlements (GST Inclusive).</p>
+          <p className="text-[14px] text-[#475569] mt-2">
+            Today — {formatDisplayDate(registryDate)} • Daily summary of finalized settlements (GST Inclusive).
+          </p>
         </div>
         
         <button 
           onClick={handleExportPDF}
-          disabled={transactions.length === 0 || isExporting}
+          disabled={todayTransactions.length === 0 || isExporting}
           className={`w-full sm:w-auto flex items-center justify-center gap-2 px-5 py-3 rounded-full font-medium text-[14px] transition-colors shrink-0 ${
-            transactions.length === 0 
+            todayTransactions.length === 0 
             ? 'bg-[#f1f5f9] text-[#94a3b8] cursor-not-allowed' 
             : 'bg-[#253b80] hover:bg-[#0093d5] text-[#ffffff] active:scale-95 shadow-[0_4px_16px_rgba(0,0,0,0.16)]'
           }`}
@@ -137,19 +200,19 @@ const SalesHistory: React.FC<SalesHistoryProps> = ({ transactions, menuItems }) 
       </div>
 
       <div>
-        {transactions.length === 0 ? (
+        {todayTransactions.length === 0 ? (
           <div className="bg-[#ffffff] rounded-xl p-16 flex flex-col items-center justify-center border border-[#e2e8f0] text-center">
               <div className="w-16 h-16 bg-[#f1f5f9] rounded-full flex items-center justify-center mb-4 text-[#94a3b8]">
                   <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
                   </svg>
               </div>
-              <h3 className="text-[18px] font-bold text-[#0f172a]">No Sales History</h3>
-              <p className="text-[#475569] text-[14px] mt-1">Transactions will appear here after checkout.</p>
+              <h3 className="text-[18px] font-bold text-[#0f172a]">No bills today</h3>
+              <p className="text-[#475569] text-[14px] mt-1">Today&apos;s settlements will appear here after checkout.</p>
           </div>
         ) : (
           <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
-            {[...transactions].reverse().map((tx) => (
+            {[...todayTransactions].reverse().map((tx) => (
               <div key={tx.id} className="bg-[#ffffff] rounded-xl border border-[#e2e8f0] p-5 shadow-[0_4px_16px_rgba(0,0,0,0.04)] hover:shadow-[0_4px_16px_rgba(0,0,0,0.08)] transition-shadow flex flex-col gap-4">
                 
                 <div className="flex justify-between items-start gap-4">
