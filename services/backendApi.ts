@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_URL || 'http://localhost:5000';
+const API_BASE = (import.meta.env.VITE_API_URL || 'http://localhost:5000').replace(/\/+$/, '');
 
 // ── Identity ──────────────────────────────────────────────────
 // Called on mount to restore role when the user has an existing token (page refresh)
