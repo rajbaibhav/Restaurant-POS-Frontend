@@ -1,6 +1,6 @@
 
 import React, { useState } from 'react';
-import { login as backendLogin } from '../services/backendApi';
+import { login as backendLogin, register as backendRegister } from '../services/backendApi';
 
 interface AuthProps {
   onLogin: (role: 'owner' | 'staff', token: string) => void;
@@ -10,19 +10,22 @@ interface AuthProps {
 const Auth: React.FC<AuthProps> = ({ onLogin }) => {
   const [name, setName] = useState('');
   const [pin, setPin] = useState('');
+  const [mode, setMode] = useState<'login' | 'register'>('login');
   const [error, setError] = useState('');
+  const [info, setInfo] = useState('');
   const [isProcessing, setIsProcessing] = useState(false);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
+    setInfo('');
     setIsProcessing(true);
     try {
-      // Send the fields the backend actually reads: { name, pin }
-      const res = await backendLogin(name, pin);
+      const trimmedName = name.trim();
+      const trimmedPin = pin.trim();
+      const res = await backendLogin(trimmedName, trimmedPin);
       if (res && res.token) {
         localStorage.setItem('token', res.token);
-        // Role comes from the backend response — never trust the UI toggle for access control
         const backendRole: 'owner' | 'staff' = res.role === 'admin' ? 'owner' : 'staff';
         onLogin(backendRole, res.token);
       } else {
@@ -30,6 +33,30 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
       }
     } catch (err: unknown) {
       setError((err instanceof Error ? err.message : null) || 'Login failed.');
+    }
+    setIsProcessing(false);
+  };
+
+  const handleRegister = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError('');
+    setInfo('');
+    setIsProcessing(true);
+    try {
+      const trimmedName = name.trim();
+      const trimmedPin = pin.trim();
+      const res = await backendRegister(trimmedName, trimmedPin);
+      if (res && res.message) {
+        setInfo(res.message);
+        setMode('login');
+        setPin('');
+      } else {
+        setInfo('Registration completed. Please sign in once your account is approved.');
+        setMode('login');
+        setPin('');
+      }
+    } catch (err: unknown) {
+      setError((err instanceof Error ? err.message : null) || 'Registration failed.');
     }
     setIsProcessing(false);
   };
@@ -45,7 +72,24 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
 
 
 
-        <form onSubmit={handleLogin} className="space-y-6">
+        <div className="flex items-center justify-center gap-3 mb-8">
+          <button
+            type="button"
+            onClick={() => { setMode('login'); setError(''); setInfo(''); }}
+            className={`px-5 py-3 rounded-full font-semibold transition ${mode === 'login' ? 'bg-[#253b80] text-white' : 'bg-[#f1f5f9] text-[#475569]'}`}
+          >
+            Login
+          </button>
+          <button
+            type="button"
+            onClick={() => { setMode('register'); setError(''); setInfo(''); }}
+            className={`px-5 py-3 rounded-full font-semibold transition ${mode === 'register' ? 'bg-[#253b80] text-white' : 'bg-[#f1f5f9] text-[#475569]'}`}
+          >
+            Register
+          </button>
+        </div>
+
+        <form onSubmit={mode === 'login' ? handleLogin : handleRegister} className="space-y-6">
           <div className="space-y-4">
             <div>
               <input
@@ -71,7 +115,8 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
               />
             </div>
 
-            {error && <p className="text-[#0f172a] text-[14px] font-medium bg-[#f1f5f9] p-3 rounded-lg border border-[#e2e8f0]">{error}</p>}
+            {error && <p className="text-[#d14343] text-[14px] font-medium bg-[#fef2f2] p-3 rounded-lg border border-[#fecaca]">{error}</p>}
+            {info && <p className="text-[#0f172a] text-[14px] font-medium bg-[#f1f5f9] p-3 rounded-lg border border-[#e2e8f0]">{info}</p>}
           </div>
 
           <button
@@ -79,9 +124,33 @@ const Auth: React.FC<AuthProps> = ({ onLogin }) => {
             disabled={isProcessing || !name || !pin}
             className="w-full h-14 bg-[#253b80] hover:bg-[#0093d5] disabled:opacity-50 text-[#ffffff] rounded-full font-bold text-[16px] transition-colors flex items-center justify-center"
           >
-            {isProcessing ? "Verifying..." : "Continue"}
+            {isProcessing ? 'Processing...' : mode === 'login' ? 'Continue' : 'Create account'}
           </button>
         </form>
+
+        <div className="text-center mt-6">
+          <p className="text-[#475569] text-[14px]">
+            {mode === 'login'
+              ? 'Need an account?'
+              : 'Already have an account?'}
+            <button
+              type="button"
+              onClick={() => {
+                setMode(mode === 'login' ? 'register' : 'login');
+                setError('');
+                setInfo('');
+              }}
+              className="ml-2 text-[#253b80] font-semibold hover:text-[#0093d5]"
+            >
+              {mode === 'login' ? 'Register' : 'Login'}
+            </button>
+          </p>
+          {mode === 'register' && (
+            <p className="text-[#64748b] text-[12px] mt-2">
+              First registered user becomes an admin. Subsequent registrations are sent for admin approval.
+            </p>
+          )}
+        </div>
 
         <p className="text-center text-[12px] text-[#94a3b8] mt-10">
           Secure terminal access for authorized personnel only.

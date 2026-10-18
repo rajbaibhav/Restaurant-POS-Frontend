@@ -10,6 +10,9 @@ import AdminDashboard from './components/AdminDashboard';
 import Sidebar from './components/Sidebar';
 import Auth from './components/Auth';
 import ChangePinModal from './components/ChangePinModal';
+import PWAInstallPrompt from './components/PWAInstallPrompt';
+import BluetoothPrinterModal from './components/BluetoothPrinterModal';
+import { bluetoothPrinter, PrinterState } from './services/bluetoothPrinter';
 
 
 // ── Backend response mappers ─────────────────────────────────────────────────
@@ -61,7 +64,8 @@ const mapTransaction = (tx: Record<string, unknown>): Transaction => ({
 // ─────────────────────────────────────────────────────────────────────────────
 
 const App: React.FC = () => {
-  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(!!localStorage.getItem('token'));
+  const [isAuthenticated, setIsAuthenticated] = useState<boolean>(false);
+  const [isAuthChecked, setIsAuthChecked] = useState<boolean>(false);
   const [isOwner, setIsOwner] = useState<boolean>(false);
   const [isSidebarOpen, setIsSidebarOpen] = useState<boolean>(false);
   const [token, setToken] = useState<string | null>(localStorage.getItem('token'));
@@ -75,13 +79,24 @@ const App: React.FC = () => {
   const [view, setView] = useState<'dashboard' | 'order' | 'billing' | 'checkout-map' | 'bill-registry' | 'admin-dashboard'>('dashboard');
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [isChangePinModalOpen, setIsChangePinModalOpen] = useState<boolean>(false);
+  const [isBluetoothModalOpen, setIsBluetoothModalOpen] = useState<boolean>(false);
+  const [printerState, setPrinterState] = useState<PrinterState>(bluetoothPrinter.getState());
+
+  useEffect(() => {
+    const unsub = bluetoothPrinter.subscribe((state) => setPrinterState(state));
+    return () => unsub();
+  }, []);
 
 
   // Restore role on page refresh: if a token already exists in localStorage,
   // validate it against the backend and recover isOwner without requiring a new login
   useEffect(() => {
     const savedToken = localStorage.getItem('token');
-    if (!savedToken || isAuthenticated) return; // already logged-in via handleLogin, skip
+    if (!savedToken) {
+      setIsAuthChecked(true);
+      return;
+    }
+
     fetchCurrentUser(savedToken)
       .then(user => {
         setIsOwner(user.role === 'admin');
@@ -94,6 +109,9 @@ const App: React.FC = () => {
         localStorage.removeItem('token');
         setIsAuthenticated(false);
         setToken(null);
+      })
+      .finally(() => {
+        setIsAuthChecked(true);
       });
   }, []);
 
@@ -168,14 +186,20 @@ const App: React.FC = () => {
       if (!token) return;
       setIsLoading(true);
       try {
-        const [rawMenu, rawTables, rawTxs] = await Promise.all([
+        const [rawMenu, rawTables] = await Promise.all([
           fetchMenu(token),
           fetchTables(token),
-          fetchTransactions(token)
         ]);
+
         setMenuItems((rawMenu as Record<string, unknown>[]).map(mapMenuItem));
         setTables((rawTables as Record<string, unknown>[]).map(mapTable));
-        setTransactions((rawTxs as Record<string, unknown>[]).map(mapTransaction));
+
+        if (isOwner) {
+          const rawTxs = await fetchTransactions(token);
+          setTransactions((rawTxs as Record<string, unknown>[]).map(mapTransaction));
+        } else {
+          setTransactions([]);
+        }
       } catch (err) {
         handleLogout();
       } finally {
@@ -183,7 +207,15 @@ const App: React.FC = () => {
       }
     };
     if (isAuthenticated && token) fetchData();
-  }, [isAuthenticated, token]);
+  }, [isAuthenticated, token, isOwner]);
+
+  if (!isAuthChecked) {
+    return (
+      <div className="h-[100dvh] flex items-center justify-center bg-[#ffffff] text-[#475569] text-[16px] font-medium">
+        Restoring session...
+      </div>
+    );
+  }
 
   if (!isAuthenticated) return <Auth onLogin={handleLogin} staffMembers={staffMembers} />;
 
@@ -199,6 +231,7 @@ const App: React.FC = () => {
         onLogout={handleLogout}
         onNavigate={navigateTo}
         onChangePin={() => setIsChangePinModalOpen(true)}
+        onOpenBluetooth={() => setIsBluetoothModalOpen(true)}
       />
 
       {/* FIX 2: Added min-w-0 and min-h-0 to prevent flexbox children from breaking layout boundaries */}
@@ -210,8 +243,23 @@ const App: React.FC = () => {
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 6h16M4 12h16M4 18h16" /></svg>
           </button>
           <span className="font-bold text-[#000000] text-[18px] tracking-tight">Eat & Park</span>
-          <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[12px] font-bold ${isOwner ? 'bg-[#000000] text-[#ffffff]' : 'bg-[#efefef] text-[#000000]'}`}>
-            {isOwner ? 'AD' : 'ST'}
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setIsBluetoothModalOpen(true)}
+              className={`p-2 rounded-full border transition-colors ${
+                printerState.isConnected
+                  ? 'bg-[#ecfdf5] border-[#a7f3d0] text-[#059669]'
+                  : 'bg-[#f8fafc] border-[#e2e8f0] text-[#64748b]'
+              }`}
+              title="Bluetooth Thermal Printer"
+            >
+              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 7l10 10-5 5V2l5 5L7 17" />
+              </svg>
+            </button>
+            <div className={`w-8 h-8 rounded-full flex items-center justify-center text-[12px] font-bold ${isOwner ? 'bg-[#000000] text-[#ffffff]' : 'bg-[#efefef] text-[#000000]'}`}>
+              {isOwner ? 'AD' : 'ST'}
+            </div>
           </div>
         </header>
 
@@ -224,6 +272,20 @@ const App: React.FC = () => {
               <h1 className="text-[32px] font-bold text-[#000000] tracking-tight leading-tight">Eat & Park POS</h1>
               <p className="text-[#4b4b4b] text-[14px] font-medium mt-1">Terminal #01 • {view.charAt(0).toUpperCase() + view.slice(1).replace('-', ' ')}</p>
             </div>
+            <button
+              onClick={() => setIsBluetoothModalOpen(true)}
+              className={`flex items-center gap-2.5 px-4 py-2.5 rounded-full border text-[13px] font-semibold transition-all shadow-sm ${
+                printerState.isConnected
+                  ? 'bg-[#ecfdf5] text-[#065f46] border-[#a7f3d0] hover:bg-[#d1fae5]'
+                  : 'bg-[#f8fafc] text-[#475569] border-[#e2e8f0] hover:bg-[#f1f5f9]'
+              }`}
+            >
+              <svg className={`w-4 h-4 ${printerState.isConnected ? 'text-[#059669]' : 'text-[#2563eb]'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 7l10 10-5 5V2l5 5L7 17" />
+              </svg>
+              <span>{printerState.isConnected ? printerState.deviceName || 'Thermal Printer' : 'Bluetooth Printer'}</span>
+              <span className={`w-2 h-2 rounded-full ${printerState.isConnected ? 'bg-[#10b981] animate-pulse' : 'bg-[#94a3b8]'}`}></span>
+            </button>
           </header>
 
           {/* View Routing - isLoading guard prevents race condition where tables render before menu items */}
@@ -258,12 +320,17 @@ const App: React.FC = () => {
           </div>
         </main>
       </div>
+      <PWAInstallPrompt />
       {isChangePinModalOpen && (
         <ChangePinModal
           token={token || ''}
           onClose={() => setIsChangePinModalOpen(false)}
         />
       )}
+      <BluetoothPrinterModal
+        isOpen={isBluetoothModalOpen}
+        onClose={() => setIsBluetoothModalOpen(false)}
+      />
     </div>
   );
 };

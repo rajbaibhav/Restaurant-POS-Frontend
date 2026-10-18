@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
-import { Transaction, MenuItem } from '../types';
+import { Transaction, MenuItem, TableStatus } from '../types';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { fetchBillRegistry } from '../services/api';
+import ReceiptPreviewModal from './ReceiptPreviewModal';
 
 interface SalesHistoryProps {
   transactions: Transaction[];
@@ -45,6 +46,7 @@ const SalesHistory: React.FC<SalesHistoryProps> = ({ transactions, menuItems }) 
   const [isExporting, setIsExporting] = useState(false);
   const [registryDate, setRegistryDate] = useState(getLocalYMD(new Date()));
   const [todayTransactions, setTodayTransactions] = useState<Transaction[]>([]);
+  const [reprintTx, setReprintTx] = useState<Transaction | null>(null);
 
   const todayYMD = getLocalYMD(new Date());
 
@@ -240,15 +242,41 @@ const SalesHistory: React.FC<SalesHistoryProps> = ({ transactions, menuItems }) 
                   })}
                 </div>
 
-                <div className="flex justify-between items-end">
-                  <span className="text-[12px] font-bold text-[#475569] uppercase tracking-wide">Amount Paid</span>
-                  <p className="text-[24px] font-bold text-[#0f172a] tracking-tight leading-none">₹{Math.round(tx.total)}</p>
+                <div className="flex justify-between items-end pt-1">
+                  <div>
+                    <span className="text-[12px] font-bold text-[#475569] uppercase tracking-wide">Amount Paid</span>
+                    <p className="text-[24px] font-bold text-[#0f172a] tracking-tight leading-none mt-1">₹{Math.round(tx.total)}</p>
+                  </div>
+                  <button
+                    onClick={() => setReprintTx(tx)}
+                    className="flex items-center gap-1.5 px-3.5 py-2 bg-[#f8fafc] hover:bg-[#eff6ff] text-[#2563eb] border border-[#dbeafe] hover:border-[#bfdbfe] rounded-full text-[12px] font-bold transition-all shadow-sm"
+                  >
+                    <svg className="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+                    </svg>
+                    <span>Reprint Slip</span>
+                  </button>
                 </div>
               </div>
             ))}
           </div>
         )}
       </div>
+
+      {reprintTx && (
+        <ReceiptPreviewModal
+          isOpen={!!reprintTx}
+          onClose={() => setReprintTx(null)}
+          table={{
+            id: reprintTx.tableId,
+            status: TableStatus.AVAILABLE,
+            currentOrder: reprintTx.items,
+          }}
+          menuItems={menuItems}
+          total={reprintTx.total}
+          paymentMethod={reprintTx.paymentMethod}
+        />
+      )}
     </div>
   );
 };

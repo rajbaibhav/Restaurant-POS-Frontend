@@ -6,7 +6,10 @@ export const fetchCurrentUser = async (token: string) => {
   const res = await fetch(`${API_BASE}/auth/me`, {
     headers: { Authorization: `Bearer ${token}` },
   });
-  if (!res.ok) throw new Error('Session expired');
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.message || 'Session expired');
+  }
   return res.json(); // Returns { _id, name, role, status }
 };
 
@@ -28,11 +31,23 @@ export const login = async (name: string, pin: string) => {
     body: JSON.stringify({ name, pin })
   });
   if (!res.ok) {
-    // Surface the real backend error message (e.g. "pending admin approval")
     const err = await res.json().catch(() => ({}));
     throw new Error(err.message || 'Login failed');
   }
   return res.json(); // Returns { _id, name, role, token }
+};
+
+export const register = async (name: string, pin: string) => {
+  const res = await fetch(`${API_BASE}/auth/register`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name, pin })
+  });
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}));
+    throw new Error(err.message || 'Registration failed');
+  }
+  return res.json();
 };
 
 export const fetchMenu = async (token) => {

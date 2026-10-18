@@ -8,9 +8,10 @@ interface SidebarProps {
   onLogout: () => void;
   onNavigate: (view: 'dashboard' | 'order' | 'billing' | 'checkout-map' | 'bill-registry' | 'admin-dashboard') => void;
   onChangePin: () => void;
+  onOpenBluetooth?: () => void;
 }
 
-const Sidebar: React.FC<SidebarProps> = ({ currentView, isOwner, isOpen, onClose, onLogout, onNavigate, onChangePin }) => {
+const Sidebar: React.FC<SidebarProps> = ({ currentView, isOwner, isOpen, onClose, onLogout, onNavigate, onChangePin, onOpenBluetooth }) => {
   return (
     <>
       <div 
@@ -44,6 +45,21 @@ const Sidebar: React.FC<SidebarProps> = ({ currentView, isOwner, isOpen, onClose
           <button onClick={() => onNavigate('bill-registry')} className={`w-full flex items-center gap-4 px-5 py-3.5 rounded-full transition-colors text-[16px] font-medium ${currentView === 'bill-registry' ? 'bg-[#253b80] text-[#ffffff]' : 'text-[#475569] hover:bg-[#f1f5f9] hover:text-[#0f172a]'}`}>
             Registry
           </button>
+
+          {onOpenBluetooth && (
+            <button 
+              onClick={onOpenBluetooth} 
+              className="w-full flex items-center justify-between px-5 py-3.5 rounded-full transition-colors text-[16px] font-medium text-[#475569] hover:bg-[#f1f5f9] hover:text-[#0f172a]"
+            >
+              <div className="flex items-center gap-3">
+                <svg className="w-5 h-5 text-[#2563eb]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 7l10 10-5 5V2l5 5L7 17" />
+                </svg>
+                <span>BT Printer</span>
+              </div>
+              <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-[#eff6ff] text-[#2563eb]">80mm</span>
+            </button>
+          )}
 
           {isOwner && (
             <>
